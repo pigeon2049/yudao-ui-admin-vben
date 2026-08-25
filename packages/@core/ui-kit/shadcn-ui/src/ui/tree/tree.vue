@@ -6,7 +6,7 @@ import type { ClassType, Recordable } from '@vben-core/typings';
 
 import type { TreeProps } from './types';
 
-import { computed, onMounted, ref, watchEffect } from 'vue';
+import { computed, ref, shallowRef, watch } from 'vue';
 
 import { ChevronRight, IconifyIcon } from '@vben-core/icons';
 import { cn, get } from '@vben-core/shared/utils';
@@ -60,38 +60,36 @@ function flatten<T = Recordable<any>, P = number | string>(
   return result;
 }
 
-const flattenData = ref<Array<InnerFlattenItem>>([]);
+const flattenData = shallowRef<Array<InnerFlattenItem>>([]);
+const itemByValue = shallowRef(new Map<number | string, Recordable<any>>());
 const modelValue = defineModel<Arrayable<number | string>>();
 const expanded = ref<Array<number | string>>(props.defaultExpandedKeys ?? []);
 
 const treeValue = ref();
-let lastTreeData: any = null;
 
-onMounted(() => {
-  watchEffect(() => {
-    flattenData.value = flatten(props.treeData, props.childrenField);
-    if (flattenData.value.length > 0) {
-      updateTreeValue();
-    }
+watch(
+  [() => props.treeData, () => props.childrenField, () => props.valueField],
+  () => {
+    const flattened = flatten(props.treeData, props.childrenField);
+    flattenData.value = flattened;
+    itemByValue.value = new Map(flattened.map((item) => [item.id, item.value]));
+    updateTreeValue();
 
-    // 只在 treeData 变化时执行展开
-    const currentTreeData = JSON.stringify(props.treeData);
-    if (lastTreeData !== currentTreeData) {
-      lastTreeData = currentTreeData;
-      if (
-        props.defaultExpandedLevel !== undefined &&
-        props.defaultExpandedLevel > 0
-      ) {
-        expandToLevel(props.defaultExpandedLevel);
-      }
+    // 只在树数据变化时计算默认展开节点，避免选中值变化时重复遍历。
+    if (
+      props.defaultExpandedLevel !== undefined &&
+      props.defaultExpandedLevel > 0
+    ) {
+      expandToLevel(props.defaultExpandedLevel);
     }
-  });
-});
+  },
+  { deep: true, immediate: true },
+);
+
+watch(modelValue, updateTreeValue, { deep: true, immediate: true });
 
 function getItemByValue(value: number | string) {
-  return flattenData.value.find(
-    (item) => get(item.value, props.valueField) === value,
-  )?.value;
+  return itemByValue.value.get(value);
 }
 
 function updateTreeValue() {
@@ -102,11 +100,16 @@ function updateTreeValue() {
     if (val.length === 0) {
       treeValue.value = [];
     } else {
-      const filteredValues = val.filter((v) => {
-        const item = getItemByValue(v);
-        return item && !get(item, props.disabledField);
-      });
-      treeValue.value = filteredValues.map((v) => getItemByValue(v));
+      const filteredValues: Array<number | string> = [];
+      const selectedItems: Recordable<any>[] = [];
+      for (const value of val) {
+        const item = getItemByValue(value);
+        if (item && !get(item, props.disabledField)) {
+          filteredValues.push(value);
+          selectedItems.push(item);
+        }
+      }
+      treeValue.value = selectedItems;
 
       if (filteredValues.length !== val.length) {
         modelValue.value = filteredValues;
@@ -199,12 +202,13 @@ const selectAllStatus = computed<'indeterminate' | boolean>(() => {
   if (!props.multiple) return false;
   if (!modelValue.value || !Array.isArray(modelValue.value)) return false;
 
+  const selectedValues = new Set(modelValue.value);
   const allValues = flattenData.value
     .filter((item) => !get(item.value, props.disabledField))
     .map((item) => get(item.value, props.valueField));
 
-  const selectedCount = allValues.filter((v) =>
-    (modelValue.value as (number | string)[]).includes(v),
+  const selectedCount = allValues.filter((value) =>
+    selectedValues.has(value),
   ).length;
 
   if (selectedCount === 0) return false;
